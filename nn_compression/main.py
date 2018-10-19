@@ -17,6 +17,17 @@ import random
 import warnings
 
 
+def estimate_model_stats(model, sample_input, mode='train'):
+    if mode == 'train':
+        model.train()
+    else:
+        model.test()
+    model.forward(sample_input)
+    models.print_model_info(model)
+    print("Memory allocated: current {:,} bytes, max {:,} bytes".format(
+        torch.cuda.memory_allocated(),
+        torch.cuda.max_memory_allocated()))
+
 class ModelScore:
     mean_iou = 0
     mean_accuracy = 0
@@ -285,9 +296,13 @@ def main():
         test_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    model, criterion = models.make_segmentation_model(args.model, dataset.class_count)
+    model, criterion = models.make_segmentation_model(args.model,
+        dataset.class_count)
     model = model.to(args.device)
     criterion = criterion.to(args.device)
+
+    sample_input = next(iter(train_loader))[0].to(args.device)
+    estimate_model_stats(model, sample_input, 'train' if args.train else 'test')
 
     if args.weights:
         if osp.isfile(args.weights):

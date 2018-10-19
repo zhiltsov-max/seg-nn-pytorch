@@ -7,6 +7,40 @@ def make_segmentation_model(model_name, class_count, **kwargs):
     criterion = nn.CrossEntropyLoss()
     return model, criterion
 
+def print_model_info(model):
+    from functools import reduce
+    from operator import mul
+    def prod(seq):
+        return reduce(mul, seq)
+
+    model_parameters_count = 0
+    model_buffers_size = 0
+    model_modules_count = 0
+    for module_name, module in model.named_modules():
+        if len(module._modules) != 0:
+            continue
+
+        module_parameters_count = 0
+        for param in module.parameters():
+            module_parameters_count += prod(param.size())
+        model_parameters_count += module_parameters_count
+
+        module_buffers_size = 0
+        module_state = module.state_dict()
+        for buffer_name in module_state:
+            buffer = module_state[buffer_name]
+            buffer_size = buffer.numel() * buffer.element_size()
+            module_buffers_size += buffer_size
+        model_buffers_size += module_buffers_size
+
+        model_modules_count += 1
+
+        print("Module: {}, {:,} parameters, size {:,} bytes".format(
+            module_name, module_parameters_count, module_buffers_size))
+    print("Layers count:", model_modules_count)
+    print("Total parameters: {:,}".format(model_parameters_count))
+    print("Model size: {:,} bytes".format(model_buffers_size))
+
 def resnet18_seg(class_count, **kwargs):
     return ResNetSeg(BasicDsBlock, [2, 2, 2, 2],
                      BasicUsBlock, [1, 1, 1, 1],

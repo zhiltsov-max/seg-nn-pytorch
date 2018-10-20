@@ -17,17 +17,6 @@ import random
 import warnings
 
 
-def estimate_model_stats(model, sample_input, mode='train'):
-    if mode == 'train':
-        model.train()
-    else:
-        model.test()
-    model.forward(sample_input)
-    models.print_model_info(model)
-    print("Memory allocated: current {:,} bytes, max {:,} bytes".format(
-        torch.cuda.memory_allocated(),
-        torch.cuda.max_memory_allocated()))
-
 class ModelScore:
     mean_iou = 0
     mean_accuracy = 0
@@ -142,6 +131,9 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             loss.backward()
             optimizer.step()
 
+            if global_iteration == 0 and args.verbose:
+                models.print_memory_stats(model, mode='train')
+
             global_iteration += 1
 
             # Print status
@@ -190,6 +182,9 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             state = None
 
 def parse_args():
+    def str2bool(value):
+        return value.lower() in ['1', 'true', 'yes', 'y', 't']
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument_group('General parameters')
@@ -203,6 +198,8 @@ def parse_args():
         help='do model testing (default: %(default)s)')
     parser.add_argument('--train', default=True, type=bool,
         help='do model training (default: %(default)s)')
+    parser.add_argument('--verbose', default=False, type=str2bool,
+        help='be verbose (default: %(default)s)')
 
     parser.add_argument_group('Data related')
     parser.add_argument('--data_dir', default='data',
@@ -212,6 +209,8 @@ def parse_args():
         help='dataset name (default: %(default)s)')
     parser.add_argument('--workers', default=1, type=int,
         help='number of data loading workers (default: %(default)s)')
+    parser.add_argument('--normalize', default=True, type=str2bool,
+        help='do data normalization before use (default: %(default)s)')
 
     parser.add_argument_group('Optimizer parameters')
     parser.add_argument('--batch_size', default=1, type=int,
@@ -281,7 +280,7 @@ def main():
         assert(args.checkpoint_save_dir is not '')
         os.makedirs(args.checkpoint_save_dir, exist_ok=True)
 
-    dataset = datasets.__dict__[args.dataset](args.data_dir)
+    dataset = datasets.__dict__[args.dataset](args.data_dir, args.normalize)
     train_dataset = dataset.get_train()
     val_dataset = dataset.get_val()
     test_dataset = dataset.get_test()
@@ -300,9 +299,6 @@ def main():
         dataset.class_count)
     model = model.to(args.device)
     criterion = criterion.to(args.device)
-
-    sample_input = next(iter(train_loader))[0].to(args.device)
-    estimate_model_stats(model, sample_input, 'train' if args.train else 'test')
 
     if args.weights:
         if osp.isfile(args.weights):
@@ -332,6 +328,10 @@ def main():
         train(args, dataset, subsets, model, criterion, optimizer, checkpoint)
 
     if args.test:
+        if args.verbose:
+            sample_input = next(iter(test_loader))[0].to(args.device)
+            models.print_memory_stats(model, sample_input,
+                'train' if args.train else 'test')
         evaluate(args, dataset, subsets['test'], model)
 
 

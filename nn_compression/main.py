@@ -199,9 +199,9 @@ def parse_args():
     parser.add_argument('--backend', default='cuda',
         choices=['cpu', 'cuda'],
         help='backend (default: %(default)s)')
-    parser.add_argument('--test', default=False, type=bool,
+    parser.add_argument('--test', default=False, type=str2bool,
         help='do model testing (default: %(default)s)')
-    parser.add_argument('--train', default=True, type=bool,
+    parser.add_argument('--train', default=True, type=str2bool,
         help='do model training (default: %(default)s)')
     parser.add_argument('--verbose', default=False, type=str2bool,
         help='be verbose (default: %(default)s)')
@@ -248,13 +248,13 @@ def parse_args():
         help='checkpoint save frequency (default: %(default)s)')
     parser.add_argument('--checkpoint_save_dir', default='checkpoints',
         help='directory for checkpoints (default: %(default)s)')
-    parser.add_argument('--save_best', default=False, type=bool,
+    parser.add_argument('--save_best', default=False, type=str2bool,
         help='track best model (default: %(default)s)')
 
     parser.add_argument_group('Evaluation related')
     parser.add_argument('--inference_dir', default='inference',
         help='inference save directory (default: %(default)s)')
-    parser.add_argument('--save_inference', default=False, type=bool,
+    parser.add_argument('--save_inference', default=False, type=str2bool,
         help='save inference during evaluation (default: %(default)s)')
 
     return parser.parse_args()

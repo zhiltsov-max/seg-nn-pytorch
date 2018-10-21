@@ -254,6 +254,8 @@ def parse_args():
         help='directory for checkpoints (default: %(default)s)')
     parser.add_argument('--save_best', default=False, type=str2bool,
         help='track best model (default: %(default)s)')
+    parser.add_argument('--optimizer', default='SGD', choices=['Adam', 'SGD'],
+        help='track best model (default: %(default)s)')
 
     parser.add_argument_group('Evaluation related')
     parser.add_argument('--inference_dir', default='inference',
@@ -323,8 +325,12 @@ def main():
                 % (args.weights))
 
     if args.train:
-        optimizer = torch.optim.SGD(model.parameters(),
-            args.lr, momentum=args.momentum, weight_decay=args.wd)
+        if args.optimizer == 'SGD':
+            optimizer = torch.optim.SGD(model.parameters(),
+                args.lr, momentum=args.momentum, weight_decay=args.wd)
+        elif args.optimizer == 'Adam':
+            optimizer = torch.optim.Adam(model.parameters(),
+                args.lr, weight_decay=args.wd)
 
         checkpoint = None
         if args.checkpoint:

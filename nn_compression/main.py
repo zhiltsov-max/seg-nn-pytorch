@@ -300,6 +300,12 @@ def main():
         test_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    subsets = {
+        'train': train_loader,
+        'val': val_loader,
+        'test': test_loader
+    }
+
     model, criterion = models.make_segmentation_model(args.model,
         dataset.class_count)
     model = model.to(args.device)
@@ -325,11 +331,6 @@ def main():
                 raise Exception("No checkpoint found at '%s'" \
                     % (args.checkpoint))
 
-        subsets = {
-            'train': train_loader,
-            'val': val_loader,
-            'test': test_loader
-        }
         train(args, dataset, subsets, model, criterion, optimizer, checkpoint)
 
     if args.test:
@@ -337,6 +338,7 @@ def main():
             sample_input = next(iter(test_loader))[0].to(args.device)
             models.print_memory_stats(model, sample_input,
                 'train' if args.train else 'test')
+        evaluate(args, dataset, subsets['test'], model,
             osp.join(args.inference_dir, 'test'))
 
 

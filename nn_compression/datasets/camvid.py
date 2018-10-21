@@ -178,7 +178,7 @@ class Dataset:
         self.subsets_lists = {}
         for subset_name in self.subset_names:
             subset_list = [
-                line.split(' ') for line \
+                line.strip().split(' ') for line \
                     in open(self._get_list_file_path(subset_name))
             ]
             self.subsets_lists[subset_name] = subset_list

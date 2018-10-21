@@ -18,26 +18,33 @@ class ConfusionMatrix:
         self.confusion = torch.Tensor(self.class_count, self.class_count)
 
     def check_segmentation(self, image_array):
-        has_invalid_values = (torch.any(image_array < 0).item() == True) or \
-                             (torch.any(image_array >= self.class_count).item() == True)
+        has_invalid_values = (torch.any(image_array < 0).item()) or \
+                             (torch.any(image_array >= self.class_count).item())
         if has_invalid_values:
-            raise Exception('Array contains unexpected values beyond interval [0; %d]: %s.' \
+            raise Exception(
+                'Array contains unexpected values beyond interval [0; %d]: %s.' \
                 % (self.class_count - 1, torch.unique(image_array)))
 
     def update(self, output, target):
         """
-            Inputs: 
-                outputs: tensor of shape (C, H, W) or (H * W)
-                targets: tensor of shape (1, H, W) or (H * W)
+            Inputs:
+                outputs: float tensor of shape (C, H, W) or (C, H * W)
+                      or long tensor of shape (H * W)
+                targets: long tensor of shape (1, H, W) or (H, W) or (H * W)
         """
         confusion = self.confusion
 
-        assert(output.dim() == 1 or (output.dim() == 3 and output.size()[0] == self.class_count))
-        assert(target.dim() == 1 or (target.dim() == 3 and target.size()[0] == 1))
-        if output.dim() == 3:
+        assert(
+            (output.dim() == 1) or \
+            (output.dim() == 2) and (output.size()[0] == self.class_count) or \
+            (output.dim() == 3) and (output.size()[0] == self.class_count))
+        assert(
+            (target.dim() == 2) or \
+            (target.dim() == 3 and target.size()[0] == 1))
+
+        if output.dim() != 1:
             output = output.view(self.class_count, -1).argmax(dim=0)
-        if target.dim() == 3:
-            target = target.view(-1)
+        target = target.view(-1).to(dtype=torch.float, device='cpu')
 
         if output.size() != target.size():
             raise Exception("Array sizes are different: %s, %s" % \
@@ -48,10 +55,11 @@ class ConfusionMatrix:
             self.check_segmentation(target)
 
         if self.sumim is None:
-            self.sumim = torch.Tensor(output.size(), device=output.device())
-            sumim = self.sumim
+            self.sumim = torch.tensor(output, dtype=torch.float, device='cpu')
+        sumim = self.sumim
 
-        sumim[:] = output * self.class_count
+        sumim[:] = output
+        sumim *= self.class_count
         sumim += target
         confusion += sumim[target < 255].histc(
             bins=confusion.numel(), min=0, max=confusion.numel()) \

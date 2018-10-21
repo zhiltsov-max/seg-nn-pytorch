@@ -47,6 +47,7 @@ def evaluate(args, dataset, subset, model, save_dir=None):
 
             outputs = model.forward(inputs)
             outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
+            outputs = outputs.contiguous()
             for output, target in zip(outputs, targets):
                 confusion.update(output, target)
 
@@ -130,6 +131,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             targets = targets.to(args.device, non_blocking=True)
 
             outputs = model.forward(inputs)
+            outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
 
             loss = criterion(outputs, targets)
             assert torch.all(torch.isfinite(loss)), 'Optmization diverged.'

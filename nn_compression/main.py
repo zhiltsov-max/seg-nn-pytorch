@@ -40,7 +40,7 @@ def evaluate(args, dataset, subset, model, save_dir=None):
             targets = targets.to(args.device, non_blocking=True)
 
             outputs = model.forward(inputs)
-            outputs = outputs[:, :, 0:targets.size()[2], 0:targets.size()[3]]
+            outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
             for output, target in zip(outputs, targets):
                 confusion.update(output, target)
 

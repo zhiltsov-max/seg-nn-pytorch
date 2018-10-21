@@ -10,8 +10,7 @@ import json
 
 
 def toLongTensor(img):
-    return torch.as_tensor(np.array(img).transpose(2, 0, 1),
-        dtype=torch.long)[0]
+    return torch.as_tensor(np.array(img), dtype=torch.long)
 
 class Subset(data.Dataset):
     images_list = None
@@ -38,7 +37,7 @@ class Subset(data.Dataset):
     def get(self, i):
         entry = self.images_list[i]
         input = Image.open(osp.join(self.base_dir, entry[0])).convert('RGB')
-        target = Image.open(osp.join(self.base_dir, entry[1])).convert('RGB')
+        target = Image.open(osp.join(self.base_dir, entry[1])).convert('P')
         return input, target, entry
 
     def __getitem__(self, i):

@@ -2,24 +2,27 @@ import torch
 import torch.nn as nn
 
 
-names = [ n for n in globals() if n and n[0].islower() ]
-
-def resnet18_seg(class_count, **kwargs):
+def model_resnet18_seg(class_count, **kwargs):
     return ResNetSeg(BasicDsBlock, [2, 2, 2, 2],
                      BasicUsBlock, [1, 1, 1, 1],
                      class_count,
                      **kwargs)
 
+def model_cnn1_seg(class_count, **kwargs):
+    return Cnn1_seg(3, class_count)
+
 
 class Cnn1_seg(nn.Module):
     def __init__(self, input_channels, class_count):
+        super(Cnn1_seg, self).__init__()
+
         layers = [
-            nn.Conv2d(3, 32, kernel_size=3, padding=1, stride=0),
+            nn.Conv2d(input_channels, class_count, kernel_size=3, padding=1),
         ]
-        self.modules = nn.Sequential(*layers)
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.modules.forward(x)
+        return self.layers.forward(x)
 
 
 def _conv(in_planes, out_planes, kernel_size, **kwargs):

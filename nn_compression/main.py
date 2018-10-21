@@ -27,6 +27,12 @@ class ModelScore:
         return self.mean_iou < other.mean_iou
 
 def evaluate(args, dataset, subset, model, save_dir=None):
+    raw_save_dir = osp.join(save_dir, 'raw')
+    painted_save_dir = osp.join(save_dir, 'painted')
+    if args.save_inference and save_dir is not None:
+        os.makedirs(raw_save_dir, exist_ok=True)
+        os.makedirs(painted_save_dir, exist_ok=True)
+
     model.eval()
     with torch.no_grad():
         confusion = ConfusionMatrix(dataset.classes)
@@ -35,7 +41,7 @@ def evaluate(args, dataset, subset, model, save_dir=None):
 
         eval_time = time.time()
 
-        for i, (inputs, targets) in enumerate(subset):
+        for i, (inputs, targets, indices) in enumerate(subset):
             inputs = inputs.to(args.device, non_blocking=True)
             targets = targets.to(args.device, non_blocking=True)
 
@@ -44,19 +50,18 @@ def evaluate(args, dataset, subset, model, save_dir=None):
             for output, target in zip(outputs, targets):
                 confusion.update(output, target)
 
-            if args.save_inference:
-                # TODO: save inference with correct filenames
-                os.makedirs(osp.join(save_dir, 'raw'), exist_ok=True)
-                os.makedirs(osp.join(save_dir, 'painted'), exist_ok=True)
-                for output, target in zip(outputs, targets):
+            if args.save_inference and save_dir is not None:
+                for output, target, idx in zip(outputs, targets, indices):
                     output = output.argmax(dim=0).cpu().numpy().astype(np.int8)
-                    output_image = Image.fromarray(output, mode='L')
-                    output_image_painted = dataset.paint_inference(output_image)
+                    output_image_raw = Image.fromarray(output, mode='L')
+                    output_image_painted = \
+                        dataset.paint_inference(output_image_raw)
 
-                    output_image.save(
-                        osp.join(save_dir, 'raw', "image_%d.png" % (i)) )
-                    output_image_painted.save(
-                        osp.join(save_dir, 'painted', "image_%d.png" % (i)) )
+                    input_path = osp.basename(subset.dataset.get_path(idx)[0])
+                    output_image_raw.save(osp.join(raw_save_dir,
+                        input_path.replace('.jpg', '.png')))
+                    output_image_painted.save(osp.join(painted_save_dir,
+                        input_path.replace('.jpg', '.png')))
 
 
         eval_time = time.time() - eval_time
@@ -118,7 +123,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
 
         epoch_time = time.time()
         step_time = epoch_time
-        for i, (inputs, targets) in enumerate(train_subset):
+        for i, (inputs, targets, _) in enumerate(train_subset):
             adjust_optimizer_params(args, optimizer, global_iteration)
 
             inputs = inputs.to(args.device, non_blocking=True)
@@ -332,7 +337,7 @@ def main():
             sample_input = next(iter(test_loader))[0].to(args.device)
             models.print_memory_stats(model, sample_input,
                 'train' if args.train else 'test')
-        evaluate(args, dataset, subsets['test'], model)
+            osp.join(args.inference_dir, 'test'))
 
 
 if __name__ == '__main__':

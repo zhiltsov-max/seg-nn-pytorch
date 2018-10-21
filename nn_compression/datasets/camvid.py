@@ -40,11 +40,14 @@ class Subset(data.Dataset):
         target = Image.open(osp.join(self.base_dir, entry[1])).convert('P')
         return input, target, entry
 
+    def get_path(self, i):
+        return self.images_list[i]
+
     def __getitem__(self, i):
         input, target, _ = self.get(i)
         input = self.input_transform(input)
         target = self.target_transform(target)
-        return input, target
+        return input, target, i
 
     def __len__(self):
         return len(self.images_list)

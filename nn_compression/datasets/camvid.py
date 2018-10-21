@@ -65,7 +65,7 @@ class Subset(data.Dataset):
         return self._std
 
     def compute_stats(self):
-        if not self._mean or not self._std:
+        if (not self._mean) or (not self._std):
             mean = np.zeros(3, dtype=np.float)
             std = np.zeros(3, dtype=np.float)
             for i in range(len(self)):
@@ -88,10 +88,10 @@ class Dataset:
         self.subset_names = subsets
         self.subsets_lists = self.get_lists()
 
-        stats_updated = False
+        stats = {}
         if normalize:
+            stats_updated = False
             stats_file_path = osp.join(self.data_root, self.stats_file_name)
-            stats = {}
             if osp.isfile(stats_file_path):
                 stats = self._load_stats(stats_file_path)
 
@@ -100,7 +100,7 @@ class Dataset:
             mean, std = self._load_subset_stats(stats, subset_name)
 
             subset_list = self.subsets_lists[subset_name]
-            if mean is None and std is None:
+            if normalize and (not mean or not std):
                 mean, std = Subset(self.data_root, subset_list).compute_stats()
                 self._save_subset_stats(stats, subset_name, [mean, std])
                 stats_updated = True
@@ -108,7 +108,7 @@ class Dataset:
             subset = Subset(self.data_root, subset_list, mean=mean, std=std)
             self.subset[subset_name] = subset
 
-        if stats_updated:
+        if normalize and stats_updated:
             self._save_stats(stats_file_path, stats)
 
     def _get_list_file_path(self, subset_name):
@@ -145,34 +145,24 @@ class Dataset:
         }
 
     def _load_stats(self, file_path):
-        def read_array(d, key, default):
-            entry = d.get(key, None)
-            if entry is not None:
-                entry = np.array(entry)
-            return entry
-
         with open(file_path, 'r') as f:
             print("Loading dataset stats from '%s'" % (file_path))
             stats = json.load(f)
-            for subset_name in stats:
-                subset_stats = stats[subset_name]
-                mean = read_array(subset_stats, 'mean', None)
-                std = read_array(subset_stats, 'std', None)
             return stats
 
     def _save_stats(self, file_path, stats):
+        def get_or_default(dic, key, convert=None):
+            entry = dic.get(key, None)
+            if entry is not None:
+                return convert(entry)
+            return entry
+
         for subset_name in stats:
             subset_stats = stats[subset_name]
             checksum = self._get_subset_checksum(subset_name)
             subset_stats['list_checksum'] = checksum
-            if 'mean' in subset_stats:
-                subset_stats['mean'] = list(subset_stats['mean'])
-            else:
-                subset_stats.pop('mean')
-            if 'std' in subset_stats:
-                subset_stats['std'] = list(subset_stats['std'])
-            else:
-                subset_stats.pop('std')
+            subset_stats['mean'] = get_or_default(subset_stats, 'mean', list)
+            subset_stats['std'] = get_or_default(subset_stats, 'std', list)
         try:
             with open(file_path, 'w') as f:
                 json.dump(stats, f, indent=0)

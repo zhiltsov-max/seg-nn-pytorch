@@ -132,6 +132,8 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             outputs = model.forward(inputs)
 
             loss = criterion(outputs, targets)
+            assert torch.all(torch.isfinite(loss)), 'Optmization diverged.'
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()

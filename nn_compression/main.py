@@ -107,14 +107,14 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
     train_subset = subsets['train']
     val_subset = subsets['val']
 
-    best_model_score = ModelScore()
+    best_score = ModelScore()
     global_iteration = 0
 
     if checkpoint:
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
         args.start_epoch = checkpoint['epoch']
-        best_model_score = checkpoint['best_model_score']
+        best_score = checkpoint['best_score']
         global_iteration = checkpoint['global_iteration']
         print("Resuming from epoch '%d'" % (args.start_epoch))
         checkpoint = None
@@ -161,17 +161,27 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
 
         # Update best model
         is_best = False
-        model_score = None
-        if (args.eval_freq) and (epoch % args.eval_freq == 0):
-            model_score = evaluate(args, dataset, val_subset, model,
-                osp.join(args.inference_dir, epoch, 'val'))
-            if model_score < best_model_score:
-                best_model_score = model_score
+        current_score = None
+        if (args.eval_freq) and (epoch != args.start_epoch) \
+           and (epoch % args.eval_freq == 0):
+
+            current_score = evaluate(args, dataset, val_subset, model,
+                osp.join(args.inference_dir, 'epoch_%d' % (epoch), 'val'))
+            if best_score < current_score:
+                best_score = current_score
                 is_best = True
             else:
                 is_best = False
-            print('Epoch %d | model score: %.3f, best score: %.3f' \
-                % (epoch, model_score, best_model_score))
+            print('Epoch {epoch} | current score: '
+                'mIoU {current_miou:.3f}, mAcc {current_macc:.3f}'
+                ', best score: mIoU {best_miou:.3f}, mAcc {best_macc:.3f}' \
+                .format(
+                    epoch=epoch,
+                    current_miou=current_score.mean_iou,
+                    current_macc=current_score.mean_accuracy,
+                    best_miou=best_score.mean_iou,
+                    best_macc=best_score.mean_accuracy
+                ))
 
         # Save model
         if (args.checkpoint_freq) and (epoch % args.checkpoint_freq == 0):
@@ -179,7 +189,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
                 'epoch': epoch + 1,
-                'best_model_score': best_model_score,
+                'best_score': best_score,
                 'global_iteration': global_iteration,
             }
             save_checkpoint(state, osp.join(

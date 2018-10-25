@@ -4,7 +4,7 @@ import torch.nn as nn
 
 def model_resnet18_seg(class_count, **kwargs):
     return ResNetSeg(BasicDsBlock, [2, 2, 2, 2],
-                     BasicUsBlock, [1, 1, 1, 1],
+                     BasicUsBlock1, [1, 1, 1, 1],
                      class_count,
                      **kwargs)
 
@@ -17,12 +17,24 @@ class Cnn1_seg(nn.Module):
         super(Cnn1_seg, self).__init__()
 
         layers = [
-            nn.Conv2d(input_channels, class_count, kernel_size=3, padding=1),
+            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, groups=32, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, groups=64, stride=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            nn.Conv2d(128, class_count, kernel_size=3, padding=1),
         ]
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.layers.forward(x)
+        input_size = x.size()
+        x = self.layers.forward(x)
+        x = nn.functional.interpolate(x, input_size[2:4], mode='bilinear')
+        return x
 
 
 def _conv(in_planes, out_planes, kernel_size, **kwargs):
@@ -55,13 +67,48 @@ class BasicDsBlock(nn.Module):
 
         return out
 
-class BasicUsBlock(nn.Module):
+class BasicUsBlock1(nn.Module):
     contraction = 1
 
-    def __init__(self, in_planes, out_planes, stride=1, upsample=None):
-        super(BasicUsBlock, self).__init__()
-        self.upsample = upsample
+    def __init__(self, in_planes, out_planes, stride=1):
+        super(BasicUsBlock1, self).__init__()
+
+        self.upsample = nn.Sequential(
+            nn.BatchNorm2d(in_planes),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(in_planes, out_planes // self.contraction,
+                kernel_size=1, stride=stride, output_padding=1)
+        )
+
+    def forward(self, x):
+        return self.upsample(x)
+
+class BasicUsBlock2(nn.Module):
+    contraction = 1
+
+    def __init__(self, in_planes, out_planes, stride=1):
+        super(BasicUsBlock2, self).__init__()
+
         self.stride = stride
+
+    def forward(self, x):
+        x = nn.functional.interpolate(x,
+            scale_factor=self.stride, mode='bilinear')
+        return x
+
+
+class BasicUsBlock3(nn.Module):
+    contraction = 1
+
+    def __init__(self, in_planes, out_planes, stride=1):
+        super(BasicUsBlock3, self).__init__()
+
+        self.upsample = nn.Sequential(
+            nn.BatchNorm2d(in_planes),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(in_planes, out_planes // self.contraction,
+                kernel_size=stride, stride=stride)
+        )
 
     def forward(self, x):
         return self.upsample(x)
@@ -160,16 +207,7 @@ class ResNetSeg(nn.Module):
     def _make_us_stage(self, block, in_planes, blocks, stride=1):
         planes = in_planes // stride
 
-        upsample = None
-        if stride != 1:
-            upsample = nn.Sequential(
-                nn.BatchNorm2d(in_planes),
-                nn.ReLU(True),
-                nn.ConvTranspose2d(in_planes, planes // block.contraction,
-                    kernel_size=1, stride=stride, output_padding=1, bias=False)
-            )
-
-        layers = [ block(in_planes, planes, stride, upsample) ]
+        layers = [ block(in_planes, planes, stride) ]
 
         in_planes = planes // block.contraction
         for _ in range(1, blocks):

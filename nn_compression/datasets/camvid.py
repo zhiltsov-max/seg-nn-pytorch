@@ -189,6 +189,42 @@ class Dataset:
 
 
 class CamVid32(Dataset):
+    classes = [
+        'Void',
+        'Archway',
+        'Bicyclist',
+        'Bridge',
+        'Building',
+        'Car',
+        'CartLuggagePram',
+        'Child',
+        'Column_Pole',
+        'Fence',
+        'LaneMkgsDriv',
+        'LaneMkgsNonDriv',
+        'Misc_Text',
+        'MotorcycleScooter',
+        'OtherMoving',
+        'ParkingBlock',
+        'Pedestrian',
+        'Road',
+        'RoadShoulder',
+        'Sidewalk',
+        'SignSymbol',
+        'Sky',
+        'SUVPickupTruck',
+        'TrafficCone',
+        'TrafficLight',
+        'Train',
+        'Tree',
+        'Truck_Bus',
+        'Tunnel',
+        'VegetationMisc',
+        'Animal',
+        'Wall'
+    ]
+    class_count = len(classes)
+
     class_colormap_index_to_rgb_table = np.array([
         0, 0, 0,
         192, 0, 128,
@@ -239,42 +275,6 @@ class CamVid32(Dataset):
         if (32 <= p): return 255
         return CamVid32.class_colormap_index_to_rgb_table[p * 3 + 2]
 
-    classes = [
-        'Void',
-        'Archway',
-        'Bicyclist',
-        'Bridge',
-        'Building',
-        'Car',
-        'CartLuggagePram',
-        'Child',
-        'Column_Pole',
-        'Fence',
-        'LaneMkgsDriv',
-        'LaneMkgsNonDriv',
-        'Misc_Text',
-        'MotorcycleScooter',
-        'OtherMoving',
-        'ParkingBlock',
-        'Pedestrian',
-        'Road',
-        'RoadShoulder',
-        'Sidewalk',
-        'SignSymbol',
-        'Sky',
-        'SUVPickupTruck',
-        'TrafficCone',
-        'TrafficLight',
-        'Train',
-        'Tree',
-        'Truck_Bus',
-        'Tunnel',
-        'VegetationMisc',
-        'Animal',
-        'Wall'
-    ]
-    class_count = len(classes)
-
     @staticmethod
     def paint_inference(image):
         painted_channels = [None] * 3
@@ -298,6 +298,22 @@ class CamVid32(Dataset):
 
 
 class CamVid12(Dataset):
+    classes = [
+        'Sky',
+        'Building',
+        'Pole',
+        'Road',
+        'Pavement',
+        'Tree',
+        'SignSymbol',
+        'Fence',
+        'Car',
+        'Pedestrian',
+        'Bicyclist',
+        'Unlabelled'
+    ]
+    class_count = len(classes)
+
     class_colormap_index_to_rgb_table = np.array([
         128, 128, 128,
         128, 0, 0,
@@ -315,41 +331,25 @@ class CamVid12(Dataset):
 
     @staticmethod
     def class_colormap_index_to_r(p):
-        if (32 <= p): return 255
+        if (12 <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 0]
 
     @staticmethod
     def class_colormap_index_to_g(p):
-        if (32 <= p): return 255
+        if (12 <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 1]
 
     @staticmethod
     def class_colormap_index_to_b(p):
-        if (32 <= p): return 255
+        if (12 <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 2]
-
-    classes = [
-        'Sky',
-        'Building',
-        'Pole',
-        'Road',
-        'Pavement',
-        'Tree',
-        'SignSymbol',
-        'Fence',
-        'Car',
-        'Pedestrian',
-        'Bicyclist',
-        'Unlabelled'
-    ]
-    class_count = len(classes)
 
     @staticmethod
     def paint_inference(image):
         painted_channels = [None] * 3
-        painted_channels[0] = image.point(CamVid32.class_colormap_index_to_r)
-        painted_channels[1] = image.point(CamVid32.class_colormap_index_to_g)
-        painted_channels[2] = image.point(CamVid32.class_colormap_index_to_b)
+        painted_channels[0] = image.point(CamVid12.class_colormap_index_to_r)
+        painted_channels[1] = image.point(CamVid12.class_colormap_index_to_g)
+        painted_channels[2] = image.point(CamVid12.class_colormap_index_to_b)
         return Image.merge("RGB", painted_channels)
 
     def __init__(self, data_root, normalize=True):

@@ -59,10 +59,11 @@ def evaluate(args, dataset, subset, model, save_dir=None):
                         dataset.paint_inference(output_image_raw)
 
                     input_path = osp.basename(subset.dataset.get_path(idx)[0])
+                    filename = input_path[:input_path.rfind('.')]
                     output_image_raw.save(osp.join(raw_save_dir,
-                        input_path.replace('.jpg', '.png')))
+                        filename + '.png'))
                     output_image_painted.save(osp.join(painted_save_dir,
-                        input_path.replace('.jpg', '.png')))
+                        filename + '.png'))
 
 
         eval_time = time.time() - eval_time
@@ -286,7 +287,7 @@ def main():
         torch.cuda.manual_seed(args.seed)
         cudnn.deterministic = True
         warnings.warn(
-            'You have chosen to seed training. '
+            'You have chosen to do seed training. '
             'This will turn on the CUDNN deterministic setting, '
             'which can slow down your training considerably! '
             'You may see unexpected behavior when restarting '

@@ -1,5 +1,6 @@
 import models.models as models
 from .common import *
+from .checkpoints import *
 
 
 _model_prefix = 'model_'

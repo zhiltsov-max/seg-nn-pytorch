@@ -2,9 +2,10 @@ import torch
 import torch.cuda
 import torch.nn as nn
 
-from functools import reduce
-from operator import mul
+
 def prod(seq):
+    from functools import reduce
+    from operator import mul
     return reduce(mul, seq)
 
 def print_memory_stats(model, sample_input=None, mode='train'):

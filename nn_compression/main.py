@@ -5,6 +5,7 @@ import torch.utils.data
 
 import nn_compression.datasets as datasets
 import nn_compression.models as models
+from nn_compression.models import save_checkpoint, load_checkpoint
 from nn_compression.utils import ConfusionMatrix
 
 import argparse
@@ -81,24 +82,6 @@ def evaluate(args, dataset, subset, model, save_dir=None):
         score.class_accuracies = results.class_acc
         return score
 
-def load_checkpoint(path):
-    checkpoint = torch.load(path)
-    model_path = osp.join(osp.dirname(path), checkpoint['model_state_path'])
-    if osp.isfile(model_path):
-        weights = torch.load(checkpoint['model_state_path'])
-        checkpoint['model_state'] = weights
-    else:
-        raise Exception("Failed to load model state from '%s'" % (model_path))
-    checkpoint.pop('model_state_path', None)
-    return checkpoint
-
-def save_checkpoint(state, path):
-    state['model_state_path'] = 'model_%d.pth' % (state['epoch'])
-    torch.save(state['model_state'],
-        osp.join(osp.dirname(path), state['model_state_path']))
-    state.pop('model_state', None)
-    torch.save(state, path)
-
 def adjust_optimizer_params(args, optimizer, iteration):
     lr = args.lr / (1.0 + args.lrd * iteration)
     for param_group in optimizer.param_groups:
@@ -114,7 +97,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
     if checkpoint:
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
-        args.start_epoch = checkpoint['epoch']
+        args.start_epoch = checkpoint['epoch'] + 1
         best_score = checkpoint['best_score']
         global_iteration = checkpoint['global_iteration']
         print("Resuming from epoch '%d'" % (args.start_epoch))
@@ -135,7 +118,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
 
             loss = criterion(outputs, targets)
-            assert torch.all(torch.isfinite(loss)), 'Optmization diverged.'
+            assert torch.all(torch.isfinite(loss)), 'Optmization has diverged.'
 
             optimizer.zero_grad()
             loss.backward()
@@ -163,9 +146,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
         # Update best model
         is_best = False
         current_score = None
-        if (args.eval_freq) and (epoch != args.start_epoch) \
-           and (epoch % args.eval_freq == 0):
-
+        if (args.eval_freq) and (epoch != 0) and (epoch % args.eval_freq == 0):
             current_score = evaluate(args, dataset, val_subset, model,
                 osp.join(args.inference_dir, 'epoch_%d' % (epoch), 'val'))
             if best_score < current_score:
@@ -189,12 +170,14 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
             state = {
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
-                'epoch': epoch + 1,
+                'epoch': epoch,
                 'best_score': best_score,
                 'global_iteration': global_iteration,
             }
-            save_checkpoint(state, osp.join(
-                args.checkpoint_save_dir, 'checkpoint_%d.pth' % (epoch + 1)))
+            checkpoint_path = osp.join(
+                args.checkpoint_save_dir, 'checkpoint_%d.pth' % (epoch))
+            print('Saving checkpoint as "%s"' % (checkpoint_path))
+            save_checkpoint(state, checkpoint_path)
 
             if args.save_best and is_best:
                 save_checkpoint(state,
@@ -347,9 +330,9 @@ def main():
         if args.checkpoint:
             if osp.isfile(args.checkpoint):
                 print("Loading checkpoint from '%s'" % (args.checkpoint))
-                checkpoint = torch.load(args.checkpoint)
+                checkpoint = load_checkpoint(args.checkpoint)
             else:
-                raise Exception("No checkpoint found at '%s'" \
+                raise Exception("Not found checkpoint at '%s'" \
                     % (args.checkpoint))
 
         train(args, dataset, subsets, model, criterion, optimizer, checkpoint)

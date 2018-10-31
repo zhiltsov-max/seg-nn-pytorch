@@ -313,7 +313,7 @@ def main():
 
     if args.weights:
         if osp.isfile(args.weights):
-            model.load_state_dict(torch.load(args.weights))
+            model.load_state_dict(torch.load(args.weights), False)
         else:
             raise Exception("Failed to load model weights from '%d'" \
                 % (args.weights))

@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 def model_resnet18_seg(class_count, **kwargs):
-    return ResNetSeg(BasicDsBlock, [2, 2, 2, 2],
+    return ResNetSeg(BasicDsBlock1, [2, 2, 2, 2],
                      BasicUsBlock1, [1, 1, 1, 1],
                      class_count,
                      **kwargs)
@@ -36,6 +36,41 @@ class Cnn1_seg(nn.Module):
         x = nn.functional.interpolate(x, input_size[2:4], mode='bilinear')
         return x
 
+def _conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+class BasicDsBlock1(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicDsBlock1, self).__init__()
+        self.conv1 = _conv3x3(inplanes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = _conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
 
 def _conv(in_planes, out_planes, kernel_size, **kwargs):
     return nn.Sequential(
@@ -44,11 +79,11 @@ def _conv(in_planes, out_planes, kernel_size, **kwargs):
         nn.Conv2d(in_planes, out_planes, kernel_size, **kwargs)
     )
 
-class BasicDsBlock(nn.Module):
+class BasicDsBlock2(nn.Module):
     expansion = 1
 
     def __init__(self, in_planes, out_planes, stride=1, downsample=None):
-        super(BasicDsBlock, self).__init__()
+        super(BasicDsBlock2, self).__init__()
         self.conv1 = _conv(in_planes, out_planes, kernel_size=3, padding=1, stride=stride)
         self.conv2 = _conv(out_planes, out_planes, kernel_size=3, padding=1)
         self.downsample = downsample
@@ -168,10 +203,10 @@ class ResNetSeg(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.ds_stage1 = self._make_ds_stage(ds_block, ds_channels[0], ds_layers[0])
-        self.ds_stage2 = self._make_ds_stage(ds_block, ds_channels[1], ds_layers[1], stride=2)
-        self.ds_stage3 = self._make_ds_stage(ds_block, ds_channels[2], ds_layers[2], stride=2)
-        self.ds_stage4 = self._make_ds_stage(ds_block, ds_channels[3], ds_layers[3], stride=2)
+        self.layer1 = self._make_ds_stage(ds_block, ds_channels[0], ds_layers[0])
+        self.layer2 = self._make_ds_stage(ds_block, ds_channels[1], ds_layers[1], stride=2)
+        self.layer3 = self._make_ds_stage(ds_block, ds_channels[2], ds_layers[2], stride=2)
+        self.layer4 = self._make_ds_stage(ds_block, ds_channels[3], ds_layers[3], stride=2)
 
         self.us_stage4 = self._make_us_stage(us_block, us_channels[3], us_layers[3], stride=2)
         self.us_stage3 = self._make_us_stage(us_block, us_channels[2], us_layers[2], stride=2)
@@ -192,8 +227,13 @@ class ResNetSeg(nn.Module):
     def _make_ds_stage(self, block, out_planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != out_planes * block.expansion:
-            downsample =_conv(self.inplanes, out_planes * block.expansion,
-                kernel_size=1, stride=stride, bias=False)
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, out_planes * block.expansion,
+                    kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_planes * block.expansion),
+            )
+            # downsample =_conv(self.inplanes, out_planes * block.expansion,
+            #     kernel_size=1, stride=stride, bias=False)
 
         layers = [ block(self.inplanes, out_planes, stride, downsample) ]
 
@@ -223,10 +263,10 @@ class ResNetSeg(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        stage1 = self.ds_stage1(x)
-        stage2 = self.ds_stage2(stage1)
-        stage3 = self.ds_stage3(stage2)
-        stage4 = self.ds_stage4(stage3)
+        stage1 = self.layer1(x)
+        stage2 = self.layer2(stage1)
+        stage3 = self.layer3(stage2)
+        stage4 = self.layer4(stage3)
 
         x = self.us_stage4(stage4)[:, :, 0:stage3.size()[2], 0:stage3.size(3)]
         x += stage3

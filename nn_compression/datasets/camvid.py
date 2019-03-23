@@ -1,194 +1,12 @@
+# Adapter for SegNet modified CamVid dataset and original one
+# Dataset (CamVid12): https://github.com/alexgkendall/SegNet-Tutorial
+
 from PIL import Image
-import torch
-import torch.utils.data as data
-import torchvision.transforms as transforms
-import os
-import os.path as osp
 import numpy as np
-import hashlib
-import json
+from .segmentation_dataset import Subset, SegmentationDataset
 
 
-def toLongTensor(img):
-    return torch.as_tensor(np.array(img), dtype=torch.long)
-
-class Subset(data.Dataset):
-    images_list = None
-    base_dir = None
-
-    def __init__(self, base_dir, images_list,
-            input_transform=transforms.ToTensor(),
-            target_transform=transforms.Lambda(toLongTensor),
-            mean=None, std=None):
-        super(Subset, self).__init__()
-        self.base_dir = base_dir
-        self.images_list = images_list
-        self._mean = mean
-        self._std = std
-        if (self._mean is not None) and (self._std is not None):
-            self.input_transform = transforms.Compose([
-                input_transform,
-                transforms.Normalize(self._mean, self._std)
-            ])
-        else:
-            self.input_transform = input_transform
-        self.target_transform = target_transform
-
-    def get(self, i):
-        entry = self.images_list[i]
-        input = Image.open(osp.join(self.base_dir, entry[0])).convert('RGB')
-        target = Image.open(osp.join(self.base_dir, entry[1])).convert('P')
-        return input, target, entry
-
-    def get_path(self, i):
-        return self.images_list[i]
-
-    def __getitem__(self, i):
-        input, target, _ = self.get(i)
-        input = self.input_transform(input)
-        target = self.target_transform(target)
-        return input, target, i
-
-    def __len__(self):
-        return len(self.images_list)
-
-    @property
-    def mean(self):
-        if not self._mean:
-            self.compute_stats()
-        return self._mean
-
-    @property
-    def std(self):
-        if not self._std:
-            self.compute_stats()
-        return self._std
-
-    def compute_stats(self):
-        if (not self._mean) or (not self._std):
-            mean = np.zeros(3, dtype=np.float)
-            std = np.zeros(3, dtype=np.float)
-            for i in range(len(self)):
-                input, _, _ = self.get(i)
-                input_array = np.array(input, dtype=float).transpose((2, 0, 1))
-                input_array *= 1.0 / 255.0
-                mean += np.mean(input_array, axis=(1, 2))
-                std += np.var(input_array, axis=(1, 2))
-            self._mean = mean * (1.0 / len(self))
-            self._std = np.sqrt(std) * (1.0 / ((len(self) - 1) or 1))
-        return self._mean, self._std
-
-
-class Dataset:
-    list_dir = 'list'
-    stats_file_name = 'stats.json'
-
-    def __init__(self, data_root, subsets, normalize=True):
-        self.data_root = data_root
-        self.subset_names = subsets
-        self.subsets_lists = self.get_lists()
-
-        stats = {}
-        if normalize:
-            stats_updated = False
-            stats_file_path = osp.join(self.data_root, self.stats_file_name)
-            if osp.isfile(stats_file_path):
-                stats = self._load_stats(stats_file_path)
-
-        self.subset = {}
-        for subset_name in self.subset_names:
-            mean, std = self._load_subset_stats(stats, subset_name)
-
-            subset_list = self.subsets_lists[subset_name]
-            if normalize and (not mean or not std):
-                mean, std = Subset(self.data_root, subset_list).compute_stats()
-                self._save_subset_stats(stats, subset_name, [mean, std])
-                stats_updated = True
-
-            subset = Subset(self.data_root, subset_list, mean=mean, std=std)
-            self.subset[subset_name] = subset
-
-        if normalize and stats_updated:
-            self._save_stats(stats_file_path, stats)
-
-    def _get_list_file_path(self, subset_name):
-        return osp.join(self.data_root, self.list_dir,
-            '%s.txt' % (subset_name))
-
-    def _get_subset_checksum(self, subset_name):
-        list_path = self._get_list_file_path(subset_name)
-        if not osp.isfile(list_path):
-            raise Exception("Not found subset list file '%s'" % (list_path))
-
-        with open(list_path, 'r') as f:
-            file_data = f.read().encode('utf-8')
-            return hashlib.md5(file_data).hexdigest()
-
-    def _load_subset_stats(self, stats, subset_name):
-        mean = None
-        std = None
-        if subset_name in stats:
-            subset = stats[subset_name]
-
-            their_checksum = subset['list_checksum']
-            our_checksum = self._get_subset_checksum(subset_name)
-            if their_checksum == our_checksum:
-                mean = subset.get('mean', None)
-                std = subset.get('std', None)
-        return [mean, std]
-
-    def _save_subset_stats(self, stats, subset_name, subset_stats):
-        stats[subset_name] = {
-            'mean': subset_stats[0],
-            'std': subset_stats[1],
-            'list_checksum': self._get_subset_checksum(subset_name),
-        }
-
-    def _load_stats(self, file_path):
-        with open(file_path, 'r') as f:
-            print("Loading dataset stats from '%s'" % (file_path))
-            stats = json.load(f)
-            return stats
-
-    def _save_stats(self, file_path, stats):
-        def get_or_default(dic, key, convert=None):
-            entry = dic.get(key, None)
-            if entry is not None:
-                return convert(entry)
-            return entry
-
-        for subset_name in stats:
-            subset_stats = stats[subset_name]
-            checksum = self._get_subset_checksum(subset_name)
-            subset_stats['list_checksum'] = checksum
-            subset_stats['mean'] = get_or_default(subset_stats, 'mean', list)
-            subset_stats['std'] = get_or_default(subset_stats, 'std', list)
-        try:
-            with open(file_path, 'w') as f:
-                json.dump(stats, f, indent=0)
-                print("Saved dataset stats at '%s'" % (file_path))
-        except Exception as e:
-            if osp.isfile(file_path):
-                os.remove(file_path)
-
-    def get_lists(self):
-        if hasattr(self, 'subsets_lists'):
-            return self.subsets_lists
-
-        self.subsets_lists = {}
-        for subset_name in self.subset_names:
-            subset_list = [
-                line.strip().split(' ') for line \
-                    in open(self._get_list_file_path(subset_name))
-            ]
-            self.subsets_lists[subset_name] = subset_list
-        return self.subsets_lists
-
-    def get_subset(self, subset_name):
-        return self.subset[subset_name]
-
-
-class CamVid32(Dataset):
+class CamVid32(SegmentationDataset):
     classes = [
         'Void',
         'Archway',
@@ -260,19 +78,21 @@ class CamVid32(Dataset):
         64, 192, 0,
     ], dtype=np.int)
 
+    crop_size = (960, 720)
+
     @staticmethod
     def class_colormap_index_to_r(p):
-        if (32 <= p): return 255
+        if (CamVid32.class_count <= p): return 255
         return CamVid32.class_colormap_index_to_rgb_table[p * 3 + 0]
 
     @staticmethod
     def class_colormap_index_to_g(p):
-        if (32 <= p): return 255
+        if (CamVid32.class_count <= p): return 255
         return CamVid32.class_colormap_index_to_rgb_table[p * 3 + 1]
 
     @staticmethod
     def class_colormap_index_to_b(p):
-        if (32 <= p): return 255
+        if (CamVid32.class_count <= p): return 255
         return CamVid32.class_colormap_index_to_rgb_table[p * 3 + 2]
 
     @staticmethod
@@ -297,7 +117,7 @@ class CamVid32(Dataset):
         return self.get_subset('test')
 
 
-class CamVid12(Dataset):
+class CamVid12(SegmentationDataset):
     classes = [
         'Sky',
         'Building',
@@ -329,19 +149,21 @@ class CamVid12(Dataset):
         0, 0, 0,
     ], dtype=np.int)
 
+    crop_size = (480, 360)
+
     @staticmethod
     def class_colormap_index_to_r(p):
-        if (12 <= p): return 255
+        if (CamVid12.class_count <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 0]
 
     @staticmethod
     def class_colormap_index_to_g(p):
-        if (12 <= p): return 255
+        if (CamVid12.class_count <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 1]
 
     @staticmethod
     def class_colormap_index_to_b(p):
-        if (12 <= p): return 255
+        if (CamVid12.class_count <= p): return 255
         return CamVid12.class_colormap_index_to_rgb_table[p * 3 + 2]
 
     @staticmethod

@@ -2,11 +2,14 @@ import torch
 import torch.optim
 import torch.backends.cudnn as cudnn
 import torch.utils.data
+import torch.nn as nn
 
 import nn_compression.datasets as datasets
 import nn_compression.models as models
 from nn_compression.models import save_checkpoint, load_checkpoint
 from nn_compression.utils import ConfusionMatrix
+
+import apex.fp16_utils
 
 import argparse
 import os
@@ -18,6 +21,25 @@ import random
 import warnings
 
 
+def fast_collate(batch):
+    print(batch)
+    imgs = [img[0] for img in batch]
+    targets = torch.tensor([target[1][0] for target in batch], dtype=torch.int64)
+    rest = [target[1:] for target in batch]
+    w = imgs[0].size[0]
+    h = imgs[0].size[1]
+    tensor = torch.zeros( (len(imgs), 3, h, w), dtype=torch.uint8 )
+    for i, img in enumerate(imgs):
+        nump_array = np.asarray(img, dtype=np.uint8)
+        tens = torch.from_numpy(nump_array)
+        if(nump_array.ndim < 3):
+            nump_array = np.expand_dims(nump_array, axis=-1)
+        nump_array = np.rollaxis(nump_array, 2)
+
+        tensor[i] += torch.from_numpy(nump_array)
+        
+    return tensor, targets, rest
+
 class ModelScore:
     mean_iou = 0
     mean_accuracy = 0
@@ -27,10 +49,16 @@ class ModelScore:
     def __lt__(self, other):
         return self.mean_iou < other.mean_iou
 
+def mask_targets(targets, real_sizes, mask_value=255):
+    for target, real_size in zip(targets, real_sizes):
+        target[:real_size[0], real_size[1]:].fill_(mask_value)
+        target[real_size[0]:, :].fill_(mask_value)
+    return targets
+
 def evaluate(args, dataset, subset, model, save_dir=None):
-    raw_save_dir = osp.join(save_dir, 'raw')
-    painted_save_dir = osp.join(save_dir, 'painted')
     if args.save_inference and save_dir is not None:
+        raw_save_dir = osp.join(save_dir, 'raw')
+        painted_save_dir = osp.join(save_dir, 'painted')
         os.makedirs(raw_save_dir, exist_ok=True)
         os.makedirs(painted_save_dir, exist_ok=True)
 
@@ -40,21 +68,31 @@ def evaluate(args, dataset, subset, model, save_dir=None):
 
         print("Running evaluation...")
 
+        samples_count = 0
+
         eval_time = time.time()
 
         for i, (inputs, targets, indices) in enumerate(subset):
+            samples_count += len(inputs)
+
+            if args.fp16:
+                inputs = inputs.half()
             inputs = inputs.to(args.device, non_blocking=True)
-            targets = targets.to(args.device, non_blocking=True)
 
             outputs = model.forward(inputs)
-            outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
-            outputs = outputs.contiguous()
-            for output, target in zip(outputs, targets):
-                confusion.update(output, target)
+
+            if targets is not None:
+                for output, target, idx in zip(outputs, targets, indices):
+                    real_size = subset.dataset.get_size(idx)
+                    output = output[:, :real_size[0], :real_size[1]].contiguous()
+                    target = target[:real_size[0], :real_size[1]].contiguous()
+                    confusion.update(output, target)
 
             if args.save_inference and save_dir is not None:
-                for output, target, idx in zip(outputs, targets, indices):
-                    output = output.argmax(dim=0).cpu().numpy().astype(np.int8)
+                for output, idx in zip(outputs, indices):
+                    real_size = subset.dataset.get_size(idx)
+                    output = output[:, :real_size[0], :real_size[1]]
+                    output = output.argmax(dim=0).cpu().numpy().astype(np.uint8)
                     output_image_raw = Image.fromarray(output, mode='L')
                     output_image_painted = \
                         dataset.paint_inference(output_image_raw)
@@ -70,7 +108,7 @@ def evaluate(args, dataset, subset, model, save_dir=None):
         eval_time = time.time() - eval_time
 
         print("Evaluation time: %.3fs., processed %d images" \
-            % (eval_time, len(subset)))
+            % (eval_time, samples_count))
 
         confusion.show_results()
         results = confusion.get_results()
@@ -82,8 +120,37 @@ def evaluate(args, dataset, subset, model, save_dir=None):
         score.class_accuracies = results.class_acc
         return score
 
-def adjust_optimizer_params(args, optimizer, iteration):
-    lr = args.lr / (1.0 + args.lrd * iteration)
+def get_model_outputs(args, model, subset):
+    with torch.no_grad():
+        model.eval()
+
+        results = None
+        for _, (inputs, _, indices) in enumerate(subset):
+            for input, index in zip(inputs, indices):
+                input = input.to(args.device, non_blocking=True)
+                input = input.view(1, *input.size())
+                output = model.forward(input)[0]
+
+                if results is None:
+                    results = torch.empty(len(subset.dataset), *output.size(), 
+                        device='cpu')
+                results[index] = output
+    return results
+
+
+LRD_TYPES = ['smooth', 'exp']
+
+def adjust_optimizer_params(args, optimizer, iteration, epoch):
+    if iteration < args.lr_warmup_iter:
+        return
+
+    if args.lrd_type == 'exp': 
+        lr = args.lr * (2.0 ** -(1.0 + args.lrd * epoch))
+    elif args.lrd_type == 'smooth':
+        lr = args.lr / (1.0 + args.lrd * (iteration - args.lr_warmup_iter))
+    else:
+        assert False, "Unexpected learning rate decay type"
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -94,6 +161,8 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
     best_score = ModelScore()
     global_iteration = 0
 
+    args.lrd /= len(train_subset)
+
     if checkpoint:
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
@@ -101,27 +170,80 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
         best_score = checkpoint['best_score']
         global_iteration = checkpoint['global_iteration']
         print("Resuming from epoch '%d'" % (args.start_epoch))
-        checkpoint = None
+        del checkpoint
+
+    if args.distill:
+        distillation_model = args.distillation_model
+        distillation_criterion = args.distillation_criterion
+        distillation_loss_scale = args.distillation_loss_scale
+        distillation_model.eval()
+
+        if args.cache_distillation_outputs:
+            distillation_model.to(args.device)
+            
+            print('Checking distillation model results')
+            score = evaluate(args, dataset, val_subset, distillation_model)
+            print("Model score on '%s': mIoU %.3f, mAcc %.3f" % \
+                ('val', score.mean_iou, score.mean_accuracy))
+
+            print('Building the distillation model outputs cache')
+            distillation_cache = get_model_outputs(args, distillation_model, train_subset)
+            def take(tensor, indices):
+                return torch.stack([tensor[idx] for idx in indices])
+            distillation_targets = lambda indices: take(distillation_cache, indices)
+            print('Cache built')
+
+            distillation_model.to('cpu')
 
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
 
         epoch_time = time.time()
         step_time = epoch_time
-        for i, (inputs, targets, _) in enumerate(train_subset):
-            adjust_optimizer_params(args, optimizer, global_iteration)
+        for i, (inputs, targets, indices) in enumerate(train_subset):
+            adjust_optimizer_params(args, optimizer, global_iteration, epoch)
 
+            if args.fp16:
+                inputs = inputs.half()
+                targets = targets.half()
             inputs = inputs.to(args.device, non_blocking=True)
             targets = targets.to(args.device, non_blocking=True)
 
-            outputs = model.forward(inputs)
-            outputs = outputs[:, :, 0:targets.size()[-2], 0:targets.size()[-1]]
-
-            loss = criterion(outputs, targets)
-            assert torch.all(torch.isfinite(loss)), 'Optmization has diverged.'
+            # if dataset has different image sizes:
+            # mask_targets(targets,
+            #     [train_subset.dataset.get_size(i) for i in indices])
 
             optimizer.zero_grad()
-            loss.backward()
+
+            outputs = model.forward(inputs)
+
+            loss = criterion(outputs, targets)
+            if args.distill:
+                if args.cache_distillation_outputs:
+                    dtargets = distillation_targets(indices).to(args.device)
+                else:
+                    dtargets = distillation_model.forward(inputs)
+
+                dloss = distillation_criterion(outputs, dtargets)
+                if (args.print_freq) and (i % args.print_freq == 0):
+                    print('Loss: %.3f, distillation loss: %.3f' % \
+                        (loss.item(), dloss.item()))
+
+                if args.distillation_rescale:
+                    current_ratio = (loss + dloss).item()
+                    current_ratio = [loss.item() / current_ratio + 1e-6, 
+                                     1 - loss.item() / current_ratio]
+                    loss = (1.0 - distillation_loss_scale) / current_ratio[0] * loss + \
+                           distillation_loss_scale / current_ratio[1] * dloss
+                else:
+                    loss += distillation_loss_scale * dloss
+
+            assert torch.all(torch.isfinite(loss)), 'Optmization has diverged.'
+
+            if args.fp16:
+                optimizer.backward(loss)
+            else:
+                loss.backward()
             optimizer.step()
 
             if global_iteration == 0 and args.verbose:
@@ -146,7 +268,7 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
         # Update best model
         is_best = False
         current_score = None
-        if (args.eval_freq) and (epoch != 0) and (epoch % args.eval_freq == 0):
+        if args.eval_freq and (epoch != 0) and (epoch % args.eval_freq == 0):
             current_score = evaluate(args, dataset, val_subset, model,
                 osp.join(args.inference_dir, 'epoch_%d' % (epoch), 'val'))
             if best_score < current_score:
@@ -165,8 +287,14 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
                     best_macc=best_score.mean_accuracy
                 ))
 
-        # Save model
-        if (args.checkpoint_freq) and (epoch % args.checkpoint_freq == 0):
+            for subset_name in ['train', 'test']:
+                print("Testing the model on '%s' subset" % (subset_name)) 
+                evaluate(args, dataset, subsets[subset_name], model)
+
+        # Save the model
+        if args.checkpoint_freq and (epoch % args.checkpoint_freq == 0) or \
+           args.save_best and is_best:
+
             state = {
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
@@ -174,14 +302,18 @@ def train(args, dataset, subsets, model, criterion, optimizer, checkpoint=None):
                 'best_score': best_score,
                 'global_iteration': global_iteration,
             }
-            checkpoint_path = osp.join(
-                args.checkpoint_save_dir, 'checkpoint_%d.pth' % (epoch))
-            print('Saving checkpoint as "%s"' % (checkpoint_path))
-            save_checkpoint(state, checkpoint_path)
+
+            if args.checkpoint_freq and (epoch % args.checkpoint_freq == 0):
+                path = osp.join(
+                    args.checkpoint_save_dir, 'checkpoint_%d.pth' % (epoch))
+                print('Saving checkpoint as "%s"' % (path))
+                save_checkpoint(state, path)
 
             if args.save_best and is_best:
-                save_checkpoint(state,
-                    osp.join(args.checkpoint_save_dir, 'best.pth'))
+                path = osp.join(args.checkpoint_save_dir, 'best.pth')
+                print('Saving new best model as "%s"' % (path))
+                save_checkpoint(state, path)
+
             state = None
 
 def parse_args():
@@ -191,6 +323,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument_group('General parameters')
+    parser.add_argument('-f', '--config', default=None, metavar='PATH',
+        help='Load experiment settings from the specified file')
+
     parser.add_argument('--model', default='resnet18_seg',
         choices=models.names,
         help='model architecture (default: %(default)s)')
@@ -222,10 +357,15 @@ def parse_args():
         help='initial learning rate (default: %(default)s)')
     parser.add_argument('--lrd', default=0, type=float,
         help='basic learning rate decay (default: %(default)s)')
+    parser.add_argument('--lrd_type', default='smooth', 
+        choices=LRD_TYPES, 
+        help='learning rate decay type (default: %(default)s)')
     parser.add_argument('--momentum', default=0.9, type=float,
         help='momentum (default: %(default)s)')
     parser.add_argument('--wd', default=1e-4, type=float,
         help='weight decay (default: %(default)s)')
+    parser.add_argument('--lr_warmup_iter', default=1, type=int,
+        help='warmup iterations (without decay) (default: %(default)s)')
 
     parser.add_argument_group('Training related')
     parser.add_argument('--checkpoint', default='', type=str,
@@ -250,12 +390,39 @@ def parse_args():
         help='track best model (default: %(default)s)')
     parser.add_argument('--optimizer', default='SGD', choices=['Adam', 'SGD'],
         help='track best model (default: %(default)s)')
+    parser.add_argument('--fp16', action='store_true',
+        help='Run model fp16 mode.')
+    parser.add_argument('--static-loss-scale', type=float, default=1,
+        help='Static loss scale, positive power of 2 values can improve fp16 convergence.')
+    parser.add_argument('--dynamic-loss-scale', action='store_true',
+        help='Use dynamic loss scaling.  If supplied, this argument supersedes ' +
+        '--static-loss-scale.')
+    parser.add_argument('--prof', dest='prof', action='store_true',
+        help='Only run 10 iterations for profiling.')
+    parser.add_argument('-dm', '--distillation_model', default=None,
+        help='The trained model for distillation learning')
+    parser.add_argument('-dw', '--distillation_model_weights', default=None,
+        help='The trained model weights')
+    parser.add_argument('-ds', '--distillation_loss_scale', default=1.0, type=float,
+        help='The multiplier for distillation loss')
+    parser.add_argument('-dr', '--distillation_rescale', default=True, type=str2bool,
+        help='Rescale distillation loss using the multiplier (default: %(default)s)')
+    parser.add_argument('--cache_distillation_outputs', 
+        default=False, type=str2bool,
+        help='Run distillation model before training and save the outputs (default: %(default)s)')
+    parser.add_argument('--test_on_best', type=str2bool, default=False,
+        help='test on best model after training (default: %(default)s)')
 
     parser.add_argument_group('Evaluation related')
     parser.add_argument('--inference_dir', default='inference',
         help='inference save directory (default: %(default)s)')
     parser.add_argument('--save_inference', default=False, type=str2bool,
         help='save inference during evaluation (default: %(default)s)')
+    parser.add_argument('--testing_subsets', default='test', 
+        type=lambda s: s.split(','),
+        help='subsets to use for model evaliation during testing'
+             ' (comma separated, default: %(default)s')
+
 
     return parser.parse_args()
 
@@ -278,12 +445,25 @@ def main():
     else:
         cudnn.benchmark = True
 
+    if args.fp16:
+        assert torch.backends.cudnn.enabled, \
+            "fp16 mode requires cudnn backend to be enabled."
+
+    if args.static_loss_scale != 1.0:
+        if not args.fp16:
+            warnings.warn(
+                "If --fp16 is not used, static_loss_scale will be ignored.")
+
     if (args.checkpoint_freq != 0) or (args.checkpoint_save_dir is not '') \
        or (args.save_best):
 
         assert(0 <= args.checkpoint_freq)
         assert(args.checkpoint_save_dir is not '')
         os.makedirs(args.checkpoint_save_dir, exist_ok=True)
+
+    if args.distillation_model:
+        assert osp.isfile(args.distillation_model_weights)
+    args.distill = args.distillation_model is not None
 
     dataset = datasets.__dict__[args.dataset](args.data_dir, args.normalize)
     train_dataset = dataset.get_train()
@@ -306,25 +486,57 @@ def main():
         'test': test_loader
     }
 
+    print("Creating model '%s'" % (args.model))
     model, criterion = models.make_segmentation_model(args.model,
         dataset.class_count)
+
+    if args.fp16:
+        model = apex.fp16_utils.network_to_half(model)
+
+    if args.weights:
+        def load_weights(model, weights):
+            if osp.isfile(weights):
+                print("Loading model weights from '%s'" % (weights))
+                model.load_state_dict(torch.load(weights), False)
+            else:
+                raise Exception("Failed to load model weights from '%s'" \
+                    % (weights))
+        load_weights(model, args.weights)
+
     model = model.to(args.device)
     criterion = criterion.to(args.device)
 
-    if args.weights:
-        if osp.isfile(args.weights):
-            model.load_state_dict(torch.load(args.weights), False)
-        else:
-            raise Exception("Failed to load model weights from '%d'" \
-                % (args.weights))
-
     if args.train:
+        if args.distill:
+            print("Distilling the knowledge of '%s'" % (args.distillation_model))
+            distillation_model, _ = models.make_segmentation_model(
+                args.distillation_model, dataset.class_count)
+            print("Loading distillation model weights from '%s'" % \
+                (args.distillation_model_weights))
+            distillation_model.load_state_dict(
+                torch.load(args.distillation_model_weights), False)
+            distillation_model = distillation_model.to(args.device)
+            args.distillation_model = distillation_model
+
+            def MSELoss(x, y):
+                # required to reduce cancellation during math operations
+                d = (x - y) ** 2.0
+                while 0 < d.dim():
+                    d = d.mean(d.dim() - 1)
+                return d
+            args.distillation_criterion = MSELoss
+
         if args.optimizer == 'SGD':
             optimizer = torch.optim.SGD(model.parameters(),
                 args.lr, momentum=args.momentum, weight_decay=args.wd)
         elif args.optimizer == 'Adam':
             optimizer = torch.optim.Adam(model.parameters(),
                 args.lr, weight_decay=args.wd)
+
+        if args.fp16:
+            optimizer = FP16_Optimizer(optimizer,
+                static_loss_scale=args.static_loss_scale,
+                dynamic_loss_scale=args.dynamic_loss_scale)
 
         checkpoint = None
         if args.checkpoint:
@@ -335,15 +547,26 @@ def main():
                 raise Exception("Not found checkpoint at '%s'" \
                     % (args.checkpoint))
 
+        torch.cuda.empty_cache()
         train(args, dataset, subsets, model, criterion, optimizer, checkpoint)
 
+        if args.save_best and args.test_on_best:
+            model.load_state_dict(torch.load(
+            	osp.join(args.checkpoint_save_dir, 'best_model.pth')))
+            for subset_name in ['train', 'val', 'test']:
+                print("Testing the model on '%s' subset" % (subset_name)) 
+                evaluate(args, dataset, subsets[subset_name], model)
+
     if args.test:
-        if args.verbose:
+        testing_subsets = args.testing_subsets
+        if args.verbose and len(testing_subsets) != 0:
+            subset_name = testing_subsets[0]
             sample_input = next(iter(test_loader))[0].to(args.device)
-            models.print_memory_stats(model, sample_input,
-                'train' if args.train else 'test')
-        evaluate(args, dataset, subsets['test'], model,
-            osp.join(args.inference_dir, 'test'))
+            models.print_memory_stats(model, sample_input, mode='test')
+        for subset_name in testing_subsets:
+            print("Testing the model on '%s' subset" % (subset_name)) 
+            evaluate(args, dataset, subsets[subset_name], model,
+                osp.join(args.inference_dir, subset_name))
 
 
 if __name__ == '__main__':

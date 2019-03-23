@@ -16,8 +16,8 @@ def load_checkpoint(path):
 def save_checkpoint(state, path):
     checkpoint = { k: state[k] for k in state if k not in ['model_state'] }
     model_state = state['model_state']
-    model_path = 'model_%d.pth' % (checkpoint['epoch'])
-    checkpoint['model_state_path'] = model_path
+    model_path = osp.splitext(path)[0] + '_model.pth'
+    checkpoint['model_state_path'] = osp.basename(model_path)
 
-    torch.save(model_state, osp.join(osp.dirname(path), model_path))
+    torch.save(model_state, model_path)
     torch.save(checkpoint, path)

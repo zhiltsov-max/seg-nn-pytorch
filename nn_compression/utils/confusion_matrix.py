@@ -12,15 +12,17 @@ class ConfusionMatrix:
     dirty = False
     sumim = None
 
-    def __init__(self, classes, check_args=True):
+    def __init__(self, classes, check_args=True, ignored_class=255):
         self.classes = classes[:]
         self.class_count = len(classes)
         self.check_args = check_args
         self.confusion = np.zeros((self.class_count, self.class_count))
+        self.ignored_class = ignored_class
 
     def check_segmentation(self, image_array):
         has_invalid_values = (np.any(image_array < 0)) or \
-                             (np.any(image_array >= self.class_count))
+                             (np.any((image_array >= self.class_count) * \
+                                (image_array != self.ignored_class)))
         if has_invalid_values:
             raise Exception(
                 'Array contains unexpected values beyond interval [0; %d]: %s.' \
